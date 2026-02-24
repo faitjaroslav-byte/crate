@@ -1,5 +1,6 @@
 import io
 import math
+import numpy as np
 import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, DataReturnMode, GridOptionsBuilder, GridUpdateMode
@@ -165,22 +166,39 @@ def pieces_summary_all(pieces_df: pd.DataFrame):
     return g
 
 def export_to_xlsx(crates_df, config_df, pieces_df, mat_all_df):
+    crates_export = round_up_numeric(crates_df)
+    pieces_export = round_up_numeric(pieces_df)
+    mat_all_export = round_up_numeric(mat_all_df)
+
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        crates_df.to_excel(writer, sheet_name="Input_Crates", index=False)
+        crates_export.to_excel(writer, sheet_name="Input_Crates", index=False)
         config_df.to_excel(writer, sheet_name="Input_Configuration", index=False)
-        pieces_df.to_excel(writer, sheet_name="Material_Consumption_Cutting", index=False)
-        mat_all_df.to_excel(writer, sheet_name="Material_Ordering_Amounts", index=False)
+        pieces_export.to_excel(writer, sheet_name="Material_Consumption_Cutting", index=False)
+        mat_all_export.to_excel(writer, sheet_name="Material_Ordering_Amounts", index=False)
     output.seek(0)
     return output
 
-def render_filterable_table(title: str, df: pd.DataFrame, key_prefix: str, sum_columns=None):
+def round_up_numeric(df: pd.DataFrame) -> pd.DataFrame:
+    rounded = df.copy()
+    for col in rounded.select_dtypes(include=["number"]).columns:
+        numeric = pd.to_numeric(rounded[col], errors="coerce")
+        ceiled = pd.Series(np.ceil(numeric), index=rounded.index)
+        if ceiled.notna().all():
+            rounded[col] = ceiled.astype("int64")
+        else:
+            rounded[col] = ceiled
+    return rounded
+
+def render_filterable_table(title: str, df: pd.DataFrame, key_prefix: str, sum_columns=None, show_totals=True):
     st.subheader(title)
     if df.empty:
         st.info("No data.")
         return df
 
-    gb = GridOptionsBuilder.from_dataframe(df)
+    df_display = round_up_numeric(df)
+
+    gb = GridOptionsBuilder.from_dataframe(df_display)
     gb.configure_default_column(
         filter=True,
         sortable=True,
@@ -188,9 +206,9 @@ def render_filterable_table(title: str, df: pd.DataFrame, key_prefix: str, sum_c
         floatingFilter=True,
     )
     grid_options = gb.build()
-    height = min(max(len(df) * 28 + 70, 220), 600)
+    height = min(max(len(df_display) * 28 + 70, 220), 600)
     grid_response = AgGrid(
-        df,
+        df_display,
         gridOptions=grid_options,
         data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
         update_mode=GridUpdateMode.MODEL_CHANGED,
@@ -202,12 +220,15 @@ def render_filterable_table(title: str, df: pd.DataFrame, key_prefix: str, sum_c
     )
     filtered = pd.DataFrame(grid_response["data"])
 
+    if not show_totals:
+        return filtered
+
     if sum_columns is None:
         sum_columns = list(filtered.select_dtypes(include=["number"]).columns)
     totals = {"Rows": int(len(filtered))}
     for c in sum_columns:
         if c in filtered.columns:
-            totals[c] = float(pd.to_numeric(filtered[c], errors="coerce").fillna(0).sum())
+            totals[c] = int(pd.to_numeric(filtered[c], errors="coerce").fillna(0).sum())
     st.caption("SUM (filtered)")
     st.dataframe(pd.DataFrame([totals]), use_container_width=True)
     return filtered
@@ -274,7 +295,7 @@ if uploaded:
         st.dataframe(pd.DataFrame(problems, columns=["Crate","Column","MissingKey"]))
         st.stop()
 
-    render_filterable_table("Crate overview", crates_df, "crate_overview")
+    render_filterable_table("Crate overview", crates_df, "crate_overview", show_totals=False)
 
     # Compute
     all_pieces = []
