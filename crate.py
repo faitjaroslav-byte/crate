@@ -1,6 +1,5 @@
 import io
 import math
-import numpy as np
 import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, DataReturnMode, GridOptionsBuilder, GridUpdateMode
@@ -166,9 +165,9 @@ def pieces_summary_all(pieces_df: pd.DataFrame):
     return g
 
 def export_to_xlsx(crates_df, config_df, pieces_df, mat_all_df):
-    crates_export = round_up_numeric(crates_df)
-    pieces_export = round_up_numeric(pieces_df)
-    mat_all_export = round_up_numeric(mat_all_df)
+    crates_export = round_numeric_max_2(crates_df)
+    pieces_export = round_numeric_max_2(pieces_df)
+    mat_all_export = round_numeric_max_2(mat_all_df)
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
@@ -179,15 +178,11 @@ def export_to_xlsx(crates_df, config_df, pieces_df, mat_all_df):
     output.seek(0)
     return output
 
-def round_up_numeric(df: pd.DataFrame) -> pd.DataFrame:
+def round_numeric_max_2(df: pd.DataFrame) -> pd.DataFrame:
     rounded = df.copy()
     for col in rounded.select_dtypes(include=["number"]).columns:
         numeric = pd.to_numeric(rounded[col], errors="coerce")
-        ceiled = pd.Series(np.ceil(numeric), index=rounded.index)
-        if ceiled.notna().all():
-            rounded[col] = ceiled.astype("int64")
-        else:
-            rounded[col] = ceiled
+        rounded[col] = numeric.round(2)
     return rounded
 
 def render_filterable_table(title: str, df: pd.DataFrame, key_prefix: str, sum_columns=None, show_totals=True):
@@ -196,7 +191,7 @@ def render_filterable_table(title: str, df: pd.DataFrame, key_prefix: str, sum_c
         st.info("No data.")
         return df
 
-    df_display = round_up_numeric(df)
+    df_display = round_numeric_max_2(df)
 
     gb = GridOptionsBuilder.from_dataframe(df_display)
     gb.configure_default_column(
@@ -228,7 +223,7 @@ def render_filterable_table(title: str, df: pd.DataFrame, key_prefix: str, sum_c
     totals = {"Rows": int(len(filtered))}
     for c in sum_columns:
         if c in filtered.columns:
-            totals[c] = int(pd.to_numeric(filtered[c], errors="coerce").fillna(0).sum())
+            totals[c] = round(float(pd.to_numeric(filtered[c], errors="coerce").fillna(0).sum()), 2)
     st.caption("SUM (filtered)")
     st.dataframe(pd.DataFrame([totals]), use_container_width=True)
     return filtered
