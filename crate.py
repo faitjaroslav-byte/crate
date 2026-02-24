@@ -3,6 +3,7 @@ import math
 import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, DataReturnMode, GridOptionsBuilder, GridUpdateMode
+from st_aggrid.shared import JsCode
 
 # -----------------------------
 # Helpers
@@ -228,6 +229,67 @@ def render_filterable_table(title: str, df: pd.DataFrame, key_prefix: str, sum_c
     st.dataframe(pd.DataFrame([totals]), use_container_width=True)
     return filtered
 
+def render_material_consumption_table(title: str, df: pd.DataFrame, key_prefix: str):
+    st.subheader(title)
+    if df.empty:
+        st.info("No data.")
+        return df
+
+    df_display = round_numeric_max_2(df)
+    gb = GridOptionsBuilder.from_dataframe(df_display)
+    gb.configure_default_column(
+        filter=True,
+        sortable=True,
+        resizable=True,
+        floatingFilter=True,
+    )
+
+    sum_footer_js = JsCode(
+        """
+        function(params) {
+            const api = params.api;
+            const total = {Crate: "", Part: "", Item: "SUM", MaterialType: "", Dimensions: "", Length_mm: "", Qty: "", TotalLength_m: "", m3: ""};
+            let qty = 0;
+            let totalLength = 0;
+            let m3 = 0;
+
+            api.forEachNodeAfterFilterAndSort(function(node) {
+                qty += Number(node.data.Qty || 0);
+                totalLength += Number(node.data.TotalLength_m || 0);
+                m3 += Number(node.data.m3 || 0);
+            });
+
+            const round2 = (value) => Math.round(value * 100) / 100;
+            const filtered = api.isAnyFilterPresent();
+
+            total.m3 = round2(m3);
+            if (filtered) {
+                total.Qty = round2(qty);
+                total.TotalLength_m = round2(totalLength);
+            }
+            api.setGridOption("pinnedBottomRowData", [total]);
+        }
+        """
+    )
+
+    grid_options = gb.build()
+    grid_options["onGridReady"] = sum_footer_js
+    grid_options["onFilterChanged"] = sum_footer_js
+
+    height = min(max(len(df_display) * 28 + 100, 260), 700)
+    grid_response = AgGrid(
+        df_display,
+        gridOptions=grid_options,
+        data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+        update_mode=GridUpdateMode.MODEL_CHANGED,
+        fit_columns_on_grid_load=False,
+        allow_unsafe_jscode=True,
+        theme="streamlit",
+        height=height,
+        key=f"{key_prefix}_grid",
+    )
+    return pd.DataFrame(grid_response["data"])
+
 # -----------------------------
 # Streamlit UI
 # -----------------------------
@@ -303,11 +365,10 @@ if uploaded:
             axis=1,
         )
 
-    render_filterable_table(
+    render_material_consumption_table(
         "Material consumption and cutting plan",
         pieces_df,
         "material_consumption_cutting",
-        sum_columns=["Qty", "TotalLength_m", "m3"],
     )
 
     mat_all_df = material_summary_all(pieces_df)
