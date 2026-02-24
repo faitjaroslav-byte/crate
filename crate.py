@@ -316,6 +316,7 @@ if uploaded:
         mat_all_df,
         "material_ordering_amounts",
         sum_columns=["TotalLength_m", "Volume_m3"],
+        show_totals=False,
     )
 
     # Export
