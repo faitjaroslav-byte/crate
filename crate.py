@@ -184,16 +184,23 @@ def render_filterable_table(title: str, df: pd.DataFrame, key_prefix: str, sum_c
         for col in df.columns:
             series = df[col]
             if pd.api.types.is_numeric_dtype(series):
-                cmin = float(series.min())
-                cmax = float(series.max())
-                lo, hi = st.slider(
-                    f"{col} range",
-                    min_value=cmin,
-                    max_value=cmax,
-                    value=(cmin, cmax),
-                    key=f"{key_prefix}_num_{col}",
-                )
-                filtered = filtered[(filtered[col] >= lo) & (filtered[col] <= hi)]
+                numeric = pd.to_numeric(series, errors="coerce").dropna()
+                if numeric.empty:
+                    continue
+                cmin = float(numeric.min())
+                cmax = float(numeric.max())
+                if cmin == cmax:
+                    st.caption(f"{col}: fixed value {cmin:g}")
+                    filtered = filtered[filtered[col] == cmin]
+                else:
+                    lo, hi = st.slider(
+                        f"{col} range",
+                        min_value=cmin,
+                        max_value=cmax,
+                        value=(cmin, cmax),
+                        key=f"{key_prefix}_num_{col}",
+                    )
+                    filtered = filtered[(filtered[col] >= lo) & (filtered[col] <= hi)]
             else:
                 options = sorted(series.dropna().astype(str).unique().tolist())
                 selected = st.multiselect(
