@@ -2,6 +2,7 @@ import io
 import math
 import pandas as pd
 import streamlit as st
+from st_aggrid import AgGrid, DataReturnMode, GridOptionsBuilder, GridUpdateMode
 
 # -----------------------------
 # Helpers
@@ -179,52 +180,34 @@ def render_filterable_table(title: str, df: pd.DataFrame, key_prefix: str, sum_c
         st.info("No data.")
         return df
 
-    filtered = df.copy()
-    with st.expander("Filters", expanded=False):
-        for col in df.columns:
-            series = df[col]
-            if pd.api.types.is_numeric_dtype(series):
-                numeric = pd.to_numeric(series, errors="coerce").dropna()
-                if numeric.empty:
-                    continue
-                cmin = float(numeric.min())
-                cmax = float(numeric.max())
-                if cmin == cmax:
-                    st.caption(f"{col}: fixed value {cmin:g}")
-                    filtered = filtered[filtered[col] == cmin]
-                else:
-                    lo, hi = st.slider(
-                        f"{col} range",
-                        min_value=cmin,
-                        max_value=cmax,
-                        value=(cmin, cmax),
-                        key=f"{key_prefix}_num_{col}",
-                    )
-                    filtered = filtered[(filtered[col] >= lo) & (filtered[col] <= hi)]
-            else:
-                options = sorted(series.dropna().astype(str).unique().tolist())
-                selected = st.multiselect(
-                    col,
-                    options=options,
-                    default=options,
-                    key=f"{key_prefix}_cat_{col}",
-                )
-                if selected:
-                    filtered = filtered[filtered[col].astype(str).isin(selected)]
-                else:
-                    filtered = filtered.iloc[0:0]
-
-    st.dataframe(filtered, use_container_width=True)
+    gb = GridOptionsBuilder.from_dataframe(df)
+    gb.configure_default_column(
+        filter=True,
+        sortable=True,
+        resizable=True,
+        floatingFilter=True,
+    )
+    grid_options = gb.build()
+    height = min(max(len(df) * 28 + 70, 220), 600)
+    grid_response = AgGrid(
+        df,
+        gridOptions=grid_options,
+        data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+        update_mode=GridUpdateMode.MODEL_CHANGED,
+        fit_columns_on_grid_load=False,
+        allow_unsafe_jscode=False,
+        theme="streamlit",
+        height=height,
+        key=f"{key_prefix}_grid",
+    )
+    filtered = pd.DataFrame(grid_response["data"])
 
     if sum_columns is None:
-        sum_columns = [
-            c for c in filtered.columns
-            if pd.api.types.is_numeric_dtype(filtered[c])
-        ]
+        sum_columns = list(filtered.select_dtypes(include=["number"]).columns)
     totals = {"Rows": int(len(filtered))}
     for c in sum_columns:
-        if c in filtered.columns and pd.api.types.is_numeric_dtype(filtered[c]):
-            totals[c] = float(filtered[c].sum())
+        if c in filtered.columns:
+            totals[c] = float(pd.to_numeric(filtered[c], errors="coerce").fillna(0).sum())
     st.caption("SUM (filtered)")
     st.dataframe(pd.DataFrame([totals]), use_container_width=True)
     return filtered
