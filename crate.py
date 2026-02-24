@@ -248,7 +248,7 @@ def render_material_consumption_table(title: str, df: pd.DataFrame, key_prefix: 
         """
         function(params) {
             const api = params.api;
-            const total = {Crate: "", Part: "", Item: "SUM", MaterialType: "", Dimensions: "", Length_mm: "", Qty: "", TotalLength_m: "", m3: ""};
+            const total = {Crate: "", Part: "", Item: "SUM", MaterialType: "", Dimensions: "", Length_mm: null, Qty: null, TotalLength_m: null, m3: null};
             let qty = 0;
             let totalLength = 0;
             let m3 = 0;
