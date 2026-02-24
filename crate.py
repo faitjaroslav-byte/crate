@@ -163,25 +163,71 @@ def pieces_summary_all(pieces_df: pd.DataFrame):
     g["Volume_m3"] = g.apply(lambda r: calc_volume_m3(r["MaterialType"], r["Dimensions"], r["TotalLength_m"]), axis=1)
     return g
 
-def export_to_xlsx(crates_df, config_df, pieces_df, pieces_all_df, mat_by_crate_df, mat_all_df):
+def export_to_xlsx(crates_df, config_df, pieces_df, mat_all_df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         crates_df.to_excel(writer, sheet_name="Input_Crates", index=False)
         config_df.to_excel(writer, sheet_name="Input_Configuration", index=False)
-
-        pieces_df.to_excel(writer, sheet_name="Pieces_PerCrate", index=False)
-        pieces_all_df.to_excel(writer, sheet_name="Pieces_All", index=False)
-
-        mat_by_crate_df.to_excel(writer, sheet_name="Material_PerCrate", index=False)
-        mat_all_df.to_excel(writer, sheet_name="Material_All", index=False)
+        pieces_df.to_excel(writer, sheet_name="Material_Consumption_Cutting", index=False)
+        mat_all_df.to_excel(writer, sheet_name="Material_Ordering_Amounts", index=False)
     output.seek(0)
     return output
+
+def render_filterable_table(title: str, df: pd.DataFrame, key_prefix: str, sum_columns=None):
+    st.subheader(title)
+    if df.empty:
+        st.info("No data.")
+        return df
+
+    filtered = df.copy()
+    with st.expander("Filters", expanded=False):
+        for col in df.columns:
+            series = df[col]
+            if pd.api.types.is_numeric_dtype(series):
+                cmin = float(series.min())
+                cmax = float(series.max())
+                lo, hi = st.slider(
+                    f"{col} range",
+                    min_value=cmin,
+                    max_value=cmax,
+                    value=(cmin, cmax),
+                    key=f"{key_prefix}_num_{col}",
+                )
+                filtered = filtered[(filtered[col] >= lo) & (filtered[col] <= hi)]
+            else:
+                options = sorted(series.dropna().astype(str).unique().tolist())
+                selected = st.multiselect(
+                    col,
+                    options=options,
+                    default=options,
+                    key=f"{key_prefix}_cat_{col}",
+                )
+                if selected:
+                    filtered = filtered[filtered[col].astype(str).isin(selected)]
+                else:
+                    filtered = filtered.iloc[0:0]
+
+    st.dataframe(filtered, use_container_width=True)
+
+    if sum_columns is None:
+        sum_columns = [
+            c for c in filtered.columns
+            if pd.api.types.is_numeric_dtype(filtered[c])
+        ]
+    totals = {"Rows": int(len(filtered))}
+    for c in sum_columns:
+        if c in filtered.columns and pd.api.types.is_numeric_dtype(filtered[c]):
+            totals[c] = float(filtered[c].sum())
+    st.caption("SUM (filtered)")
+    st.dataframe(pd.DataFrame([totals]), use_container_width=True)
+    return filtered
 
 # -----------------------------
 # Streamlit UI
 # -----------------------------
-st.set_page_config(page_title="Crate BOM Calculator", layout="wide")
-st.title("Crate calculator (pieces + material)")
+st.set_page_config(page_title="Calccrate", layout="wide")
+st.title("Calccrate")
+st.caption("Calculates wooden crate parts and material consumption.")
 
 st.sidebar.header("Global settings")
 gap_mm = st.sidebar.number_input("Gap between boards g (mm)", min_value=0, max_value=50, value=3, step=1)
@@ -238,32 +284,36 @@ if uploaded:
         st.dataframe(pd.DataFrame(problems, columns=["Crate","Column","MissingKey"]))
         st.stop()
 
-    st.subheader("Input preview")
-    st.dataframe(crates_df, use_container_width=True)
+    render_filterable_table("Crate overview", crates_df, "crate_overview")
 
     # Compute
     all_pieces = []
     for _, row in crates_df.iterrows():
         all_pieces.append(compute_for_crate(row, settings))
     pieces_df = pd.concat(all_pieces, ignore_index=True) if all_pieces else pd.DataFrame()
+    if not pieces_df.empty:
+        pieces_df["m3"] = pieces_df.apply(
+            lambda r: calc_volume_m3(r["MaterialType"], r["Dimensions"], r["TotalLength_m"]),
+            axis=1,
+        )
 
-    st.subheader("Pieces (per crate)")
-    st.dataframe(pieces_df, use_container_width=True)
-
-    pieces_all_df = pieces_summary_all(pieces_df)
-    st.subheader("Pieces (all crates aggregated)")
-    st.dataframe(pieces_all_df, use_container_width=True)
-
-    mat_by_crate_df = material_summary(pieces_df)
-    st.subheader("Material needed (per crate)")
-    st.dataframe(mat_by_crate_df, use_container_width=True)
+    render_filterable_table(
+        "Material consumption and cutting plan",
+        pieces_df,
+        "material_consumption_cutting",
+        sum_columns=["Qty", "TotalLength_m", "m3"],
+    )
 
     mat_all_df = material_summary_all(pieces_df)
-    st.subheader("Material needed (all crates aggregated)")
-    st.dataframe(mat_all_df, use_container_width=True)
+    render_filterable_table(
+        "Material needed (ordering amounts)",
+        mat_all_df,
+        "material_ordering_amounts",
+        sum_columns=["TotalLength_m", "Volume_m3"],
+    )
 
     # Export
-    out = export_to_xlsx(crates_df, config_df, pieces_df, pieces_all_df, mat_by_crate_df, mat_all_df)
+    out = export_to_xlsx(crates_df, config_df, pieces_df, mat_all_df)
     st.download_button(
         label="Download XLSX (results)",
         data=out,
