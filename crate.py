@@ -186,7 +186,14 @@ def round_numeric_max_2(df: pd.DataFrame) -> pd.DataFrame:
         rounded[col] = numeric.round(2)
     return rounded
 
-def render_filterable_table(title: str, df: pd.DataFrame, key_prefix: str, sum_columns=None, show_totals=True):
+def render_filterable_table(
+    title: str,
+    df: pd.DataFrame,
+    key_prefix: str,
+    sum_columns=None,
+    show_totals=True,
+    min_height=220,
+):
     st.subheader(title)
     if df.empty:
         st.info("No data.")
@@ -202,7 +209,7 @@ def render_filterable_table(title: str, df: pd.DataFrame, key_prefix: str, sum_c
         floatingFilter=True,
     )
     grid_options = gb.build()
-    height = min(max(len(df_display) * 28 + 70, 220), 600)
+    height = min(max(len(df_display) * 28 + 70, min_height), 600)
     grid_response = AgGrid(
         df_display,
         gridOptions=grid_options,
@@ -378,6 +385,7 @@ if uploaded:
         "material_ordering_amounts",
         sum_columns=["TotalLength_m", "Volume_m3"],
         show_totals=False,
+        min_height=140,
     )
 
     # Export
