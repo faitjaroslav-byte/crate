@@ -122,10 +122,12 @@ def derive_crate_geometry(crate_row, settings):
     lid_t, _ = parse_dims(lid_dims)
 
     top_margin = settings["top_margin_mm"]
+    longitudinal_margin = settings["longitudinal_margin_mm"]
+    horizontal_margin = settings["horizontal_margin_mm"]
 
     # Input L/W/H are load inner dimensions; H is between floor boards and top rail.
-    inner_l = load_l
-    inner_w = load_w
+    inner_l = load_l + longitudinal_margin
+    inner_w = load_w + horizontal_margin
     inner_h = load_h + top_margin
 
     # L is between inner faces of square end wall joints.
@@ -401,26 +403,45 @@ def render_material_consumption_table(title: str, df: pd.DataFrame, key_prefix: 
 # -----------------------------
 # Streamlit UI
 # -----------------------------
-st.set_page_config(page_title="Calccrate", layout="wide")
-st.title("Calccrate")
+st.set_page_config(page_title="CalcCrates", layout="wide")
+st.title("CalcCrates")
 st.caption("Calculates wooden crate parts and material consumption.")
 
 st.sidebar.header("Global settings")
 gap_mm = st.sidebar.number_input("Gap between boards g (mm)", min_value=0, max_value=50, value=3, step=1)
 reinf_spacing_mm = st.sidebar.number_input("Reinforcement spacing (mm)", min_value=200, max_value=3000, value=1000, step=50)
 n_long_runners = st.sidebar.number_input("Number of longitudinal runners (pcs)", min_value=0, max_value=10, value=2, step=1)
+longitudinal_margin_mm = st.sidebar.number_input("Longitudinal margin (mm)", min_value=0, max_value=2000, value=0, step=10)
+horizontal_margin_mm = st.sidebar.number_input("Horizontal margin (mm)", min_value=0, max_value=2000, value=0, step=10)
 top_margin_mm = st.sidebar.number_input("Top margin above load (mm)", min_value=0, max_value=2000, value=0, step=10)
+refresh_clicked = st.sidebar.button("Refresh calculations")
 
 settings = dict(
     gap_mm=int(gap_mm),
     reinf_spacing_mm=int(reinf_spacing_mm),
     n_long_runners=int(n_long_runners),
+    longitudinal_margin_mm=int(longitudinal_margin_mm),
+    horizontal_margin_mm=int(horizontal_margin_mm),
     top_margin_mm=int(top_margin_mm),
 )
 
 uploaded = st.file_uploader("Upload XLSX with crates + configuration", type=["xlsx"])
 
 if uploaded:
+    if "applied_settings" not in st.session_state:
+        st.session_state["applied_settings"] = settings.copy()
+    if "last_file_id" not in st.session_state:
+        st.session_state["last_file_id"] = None
+
+    current_file_id = (uploaded.name, uploaded.size)
+    if st.session_state["last_file_id"] != current_file_id:
+        st.session_state["applied_settings"] = settings.copy()
+        st.session_state["last_file_id"] = current_file_id
+    elif refresh_clicked:
+        st.session_state["applied_settings"] = settings.copy()
+
+    applied_settings = st.session_state["applied_settings"]
+
     # Read input
     xls = pd.ExcelFile(uploaded)
     sheet_by_norm = {str(name).strip().lower(): name for name in xls.sheet_names}
@@ -490,19 +511,21 @@ if uploaded:
         st.dataframe(pd.DataFrame(problems, columns=["Crate","Column","MissingKey"]))
         st.stop()
 
-    overview_df = crates_df.copy()
-    geom_rows = overview_df.apply(lambda r: derive_crate_geometry(r, settings), axis=1)
+    overview_df = crates_df[["Crate"]].copy()
+    geom_rows = crates_df.apply(lambda r: derive_crate_geometry(r, applied_settings), axis=1)
+    overview_df["Inner_L"] = geom_rows.apply(lambda g: g["inner_l_mm"])
+    overview_df["Inner_W"] = geom_rows.apply(lambda g: g["inner_w_mm"])
+    overview_df["Inner_H"] = geom_rows.apply(lambda g: g["inner_h_mm"])
     overview_df["Outer_L"] = geom_rows.apply(lambda g: g["outer_l_mm"])
     overview_df["Outer_W"] = geom_rows.apply(lambda g: g["outer_w_mm"])
     overview_df["Outer_H"] = geom_rows.apply(lambda g: g["outer_h_mm"])
-    overview_df["Inner_H_with_top_margin"] = geom_rows.apply(lambda g: g["inner_h_mm"])
-
-    render_filterable_table("Crate overview", overview_df, "crate_overview", show_totals=False)
+    st.subheader("Crate overview")
+    st.dataframe(round_numeric_max_2(overview_df), use_container_width=True)
 
     # Compute
     all_pieces = []
     for _, row in crates_df.iterrows():
-        all_pieces.append(compute_for_crate(row, settings))
+        all_pieces.append(compute_for_crate(row, applied_settings))
     pieces_df = pd.concat(all_pieces, ignore_index=True) if all_pieces else pd.DataFrame()
     if not pieces_df.empty:
         pieces_df["m3"] = pieces_df.apply(
