@@ -199,7 +199,7 @@ def compute_for_crate(crate_row, settings):
     add_piece(pieces, crate_id, "Walls", "Wall board (short)", "Board", walls_dims, short_wall_len, 2 * n_layers)
 
     # --- Square end wall joints (additional item) ---
-    add_piece(pieces, crate_id, "Walls", "Square end wall joist", "Board", square_joist_dims, wall_h, 4)
+    add_piece(pieces, crate_id, "Walls", "Square end wall joist", "Beam", square_joist_dims, wall_h, 4)
 
     # --- Lid boards ---
     _, w_l = parse_dims(lid_dims)
@@ -228,7 +228,7 @@ def compute_for_crate(crate_row, settings):
 
     # --- Lid reinforcement (additional items) ---
     n_lid_battens = (math.floor(outer_l / spacing) + 1) if spacing > 0 else 0
-    add_piece(pieces, crate_id, "Lid reinforcement", "Lid batten (transverse)", "Board", lid_reinf_beams_dims, outer_w, n_lid_battens)
+    add_piece(pieces, crate_id, "Lid reinforcement", "Lid batten (transverse)", "Beam", lid_reinf_beams_dims, outer_w, n_lid_battens)
     add_piece(pieces, crate_id, "Lid reinforcement", "Lid connector (longitudinal)", "Board", lid_reinf_long_dims, outer_l, 2)
 
     # --- Runners (beams) ---
@@ -461,9 +461,9 @@ if uploaded:
         "Runner longitudal": "Beam",
         "Runner transverse": "Beam",
         "Lid": "Board",
-        "Lid Reinforcement Beams": "Board",
+        "Lid Reinforcement Beams": "Beam",
         "Lid reinforcement Longitudal Boards": "Board",
-        "Square End Wall Joists": "Board",
+        "Square End Wall Joists": "Beam",
     }
     fallback_map = {
         "Walls": [],
