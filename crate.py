@@ -26,9 +26,31 @@ def ceil_div(a, b):
     return int(math.ceil(a / b)) if b > 0 else 0
 
 def safe_int(x):
-    if pd.isna(x): 
+    if pd.isna(x):
         return 0
-    return int(str(x).strip())
+    s = str(x).strip()
+    if s == "":
+        return 0
+    try:
+        return int(float(s))
+    except ValueError:
+        return 0
+
+def clean_text(x) -> str:
+    if pd.isna(x):
+        return ""
+    return str(x).strip()
+
+def resolve_dims(row, col_name: str, fallback_cols=None):
+    fallback_cols = fallback_cols or []
+    value = clean_text(row.get(col_name, ""))
+    if value:
+        return value
+    for fb in fallback_cols:
+        fb_val = clean_text(row.get(fb, ""))
+        if fb_val:
+            return fb_val
+    return ""
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -48,6 +70,8 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
         if cl == "lid reinforcement beams":
             rename[c] = "Lid Reinforcement Beams"
         if cl == "lid reinforcement longitudal boards":
+            rename[c] = "Lid reinforcement Longitudal Boards"
+        if cl == "lid reinforcement longitudinal boards":
             rename[c] = "Lid reinforcement Longitudal Boards"
         if cl == "square end wall joists":
             rename[c] = "Square End Wall Joists"
@@ -85,11 +109,11 @@ def derive_crate_geometry(crate_row, settings):
     load_w = safe_int(crate_row["W"])
     load_h = safe_int(crate_row["H"])
 
-    walls_dims = str(crate_row["Walls"]).strip()
-    reinf_dims = str(crate_row["Reinforcements/diagonals"]).strip()
-    square_joist_dims = str(crate_row["Square End Wall Joists"]).strip()
-    runner_long_dims = str(crate_row["Runner longitudal"]).strip()
-    lid_dims = str(crate_row["Lid"]).strip()
+    walls_dims = resolve_dims(crate_row, "Walls")
+    reinf_dims = resolve_dims(crate_row, "Reinforcements/diagonals")
+    square_joist_dims = resolve_dims(crate_row, "Square End Wall Joists", ["Reinforcements/diagonals"])
+    runner_long_dims = resolve_dims(crate_row, "Runner longitudal")
+    lid_dims = resolve_dims(crate_row, "Lid")
 
     wall_t, wall_w = parse_dims(walls_dims)
     reinf_t, _ = parse_dims(reinf_dims)
@@ -146,14 +170,14 @@ def compute_for_crate(crate_row, settings):
     outer_l = geom["outer_l_mm"]
     outer_w = geom["outer_w_mm"]
 
-    walls_dims = str(crate_row["Walls"]).strip()
-    reinf_dims = str(crate_row["Reinforcements/diagonals"]).strip()
-    lid_reinf_beams_dims = str(crate_row["Lid Reinforcement Beams"]).strip()
-    lid_reinf_long_dims = str(crate_row["Lid reinforcement Longitudal Boards"]).strip()
-    square_joist_dims = str(crate_row["Square End Wall Joists"]).strip()
-    runner_long_dims = str(crate_row["Runner longitudal"]).strip()
-    runner_tr_dims = str(crate_row["Runner transverse"]).strip()
-    lid_dims = str(crate_row["Lid"]).strip()
+    walls_dims = resolve_dims(crate_row, "Walls")
+    reinf_dims = resolve_dims(crate_row, "Reinforcements/diagonals")
+    lid_reinf_beams_dims = resolve_dims(crate_row, "Lid Reinforcement Beams", ["Reinforcements/diagonals"])
+    lid_reinf_long_dims = resolve_dims(crate_row, "Lid reinforcement Longitudal Boards", ["Lid Reinforcement Beams", "Reinforcements/diagonals"])
+    square_joist_dims = resolve_dims(crate_row, "Square End Wall Joists", ["Reinforcements/diagonals"])
+    runner_long_dims = resolve_dims(crate_row, "Runner longitudal")
+    runner_tr_dims = resolve_dims(crate_row, "Runner transverse")
+    lid_dims = resolve_dims(crate_row, "Lid")
 
     gap = settings["gap_mm"]
     spacing = settings["reinf_spacing_mm"]
@@ -399,14 +423,17 @@ uploaded = st.file_uploader("Upload XLSX with crates + configuration", type=["xl
 if uploaded:
     # Read input
     xls = pd.ExcelFile(uploaded)
-    if "Crate list " not in xls.sheet_names or "Configuration" not in xls.sheet_names:
+    sheet_by_norm = {str(name).strip().lower(): name for name in xls.sheet_names}
+    crate_sheet = sheet_by_norm.get("crate list")
+    cfg_sheet = sheet_by_norm.get("configuration")
+    if not crate_sheet or not cfg_sheet:
         st.error("Expected sheets: 'Crate list ' and 'Configuration'.")
         st.stop()
 
-    crates_df = pd.read_excel(xls, sheet_name="Crate list ")
+    crates_df = pd.read_excel(xls, sheet_name=crate_sheet)
     crates_df = normalize_columns(crates_df)
 
-    config_df = pd.read_excel(xls, sheet_name="Configuration")
+    config_df = pd.read_excel(xls, sheet_name=cfg_sheet)
     config_df.columns = [str(c).strip() for c in config_df.columns]
 
     # Validate materials: crate selections must exist in Configuration sheet
@@ -424,6 +451,9 @@ if uploaded:
         st.error(f"Missing columns in 'Crate list ': {missing}")
         st.stop()
 
+    crates_df["Crate"] = crates_df["Crate"].apply(clean_text)
+    crates_df = crates_df[crates_df["Crate"] != ""].copy()
+
     # Check selections exist
     sel_specs = {
         "Walls": "Board",
@@ -435,10 +465,23 @@ if uploaded:
         "Lid reinforcement Longitudal Boards": "Board",
         "Square End Wall Joists": "Board",
     }
+    fallback_map = {
+        "Walls": [],
+        "Reinforcements/diagonals": [],
+        "Runner longitudal": [],
+        "Runner transverse": [],
+        "Lid": [],
+        "Lid Reinforcement Beams": ["Reinforcements/diagonals"],
+        "Lid reinforcement Longitudal Boards": ["Lid Reinforcement Beams", "Reinforcements/diagonals"],
+        "Square End Wall Joists": ["Reinforcements/diagonals"],
+    }
     problems = []
     for idx,row in crates_df.iterrows():
         for c, mtype in sel_specs.items():
-            dims = str(row[c]).strip()
+            dims = resolve_dims(row, c, fallback_map.get(c, []))
+            if not dims:
+                problems.append((row["Crate"], c, "EMPTY"))
+                continue
             key = f"{mtype}|{dims}"
             if key not in available:
                 problems.append((row["Crate"], c, key))
