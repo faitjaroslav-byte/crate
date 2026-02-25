@@ -43,6 +43,14 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     # In your file, columns are 'W ' and 'H '
     if "W " in df.columns: rename["W "] = "W"
     if "H " in df.columns: rename["H "] = "H"
+    for c in df.columns:
+        cl = c.lower()
+        if cl == "lid reinforcement beams":
+            rename[c] = "Lid Reinforcement Beams"
+        if cl == "lid reinforcement longitudal boards":
+            rename[c] = "Lid reinforcement Longitudal Boards"
+        if cl == "square end wall joists":
+            rename[c] = "Square End Wall Joists"
     df = df.rename(columns=rename)
     return df
 
@@ -72,17 +80,77 @@ def calc_volume_m3(material_type, dims_str, total_length_m):
     area_m2 = (a / 1000.0) * (b / 1000.0)
     return area_m2 * total_length_m
 
+def derive_crate_geometry(crate_row, settings):
+    load_l = safe_int(crate_row["L"])
+    load_w = safe_int(crate_row["W"])
+    load_h = safe_int(crate_row["H"])
+
+    walls_dims = str(crate_row["Walls"]).strip()
+    reinf_dims = str(crate_row["Reinforcements/diagonals"]).strip()
+    square_joist_dims = str(crate_row["Square End Wall Joists"]).strip()
+    runner_long_dims = str(crate_row["Runner longitudal"]).strip()
+    lid_dims = str(crate_row["Lid"]).strip()
+
+    wall_t, wall_w = parse_dims(walls_dims)
+    reinf_t, _ = parse_dims(reinf_dims)
+    sq_joist_t, _ = parse_dims(square_joist_dims)
+    runner_a, runner_b = parse_dims(runner_long_dims)
+    lid_t, _ = parse_dims(lid_dims)
+
+    top_margin = settings["top_margin_mm"]
+
+    # Input L/W/H are load inner dimensions; H is between floor boards and top rail.
+    inner_l = load_l
+    inner_w = load_w
+    inner_h = load_h + top_margin
+
+    # L is between inner faces of square end wall joints.
+    long_wall_len = inner_l + 2 * sq_joist_t
+    short_wall_len = inner_w
+    wall_reinf_h = inner_h
+
+    runner_h = min(runner_a, runner_b)
+
+    # Approximate outer envelope used for overview and lid sizing.
+    outer_l = long_wall_len + 2 * wall_t
+    outer_w = short_wall_len + 2 * wall_t
+    outer_h = runner_h + wall_t + wall_reinf_h + reinf_t + lid_t
+
+    return {
+        "inner_l_mm": inner_l,
+        "inner_w_mm": inner_w,
+        "inner_h_mm": inner_h,
+        "long_wall_len_mm": long_wall_len,
+        "short_wall_len_mm": short_wall_len,
+        "wall_reinf_h_mm": wall_reinf_h,
+        "outer_l_mm": outer_l,
+        "outer_w_mm": outer_w,
+        "outer_h_mm": outer_h,
+        "wall_t_mm": wall_t,
+        "wall_w_mm": wall_w,
+        "reinf_t_mm": reinf_t,
+        "sq_joist_t_mm": sq_joist_t,
+    }
+
 # -----------------------------
 # Core calc
 # -----------------------------
 def compute_for_crate(crate_row, settings):
     crate_id = str(crate_row["Crate"]).strip()
-    L = safe_int(crate_row["L"])
-    W = safe_int(crate_row["W"])
-    H = safe_int(crate_row["H"])
+    geom = derive_crate_geometry(crate_row, settings)
+    inner_l = geom["inner_l_mm"]
+    inner_w = geom["inner_w_mm"]
+    wall_h = geom["wall_reinf_h_mm"]
+    long_wall_len = geom["long_wall_len_mm"]
+    short_wall_len = geom["short_wall_len_mm"]
+    outer_l = geom["outer_l_mm"]
+    outer_w = geom["outer_w_mm"]
 
     walls_dims = str(crate_row["Walls"]).strip()
     reinf_dims = str(crate_row["Reinforcements/diagonals"]).strip()
+    lid_reinf_beams_dims = str(crate_row["Lid Reinforcement Beams"]).strip()
+    lid_reinf_long_dims = str(crate_row["Lid reinforcement Longitudal Boards"]).strip()
+    square_joist_dims = str(crate_row["Square End Wall Joists"]).strip()
     runner_long_dims = str(crate_row["Runner longitudal"]).strip()
     runner_tr_dims = str(crate_row["Runner transverse"]).strip()
     lid_dims = str(crate_row["Lid"]).strip()
@@ -94,22 +162,26 @@ def compute_for_crate(crate_row, settings):
     pieces = []
 
     # --- Bottom boards ---
-    t_b, w_b = parse_dims(walls_dims)  # bottom uses same as walls (simple)
-    n_bottom = ceil_div(W, (w_b + gap))
-    add_piece(pieces, crate_id, "Bottom", "Bottom board", "Board", walls_dims, L, n_bottom)
+    _, w_b = parse_dims(walls_dims)  # bottom uses same as walls
+    n_bottom = ceil_div(inner_w, (w_b + gap))
+    add_piece(pieces, crate_id, "Bottom", "Bottom board", "Board", walls_dims, inner_l, n_bottom)
 
     # --- Walls boards ---
     # layers in height (horizontal rows)
-    n_layers = ceil_div(H, (w_b + gap))
+    n_layers = ceil_div(wall_h, (w_b + gap))
     # long walls: 2 per layer
-    add_piece(pieces, crate_id, "Walls", "Wall board (long)", "Board", walls_dims, L, 2 * n_layers)
+    add_piece(pieces, crate_id, "Walls", "Wall board (long)", "Board", walls_dims, long_wall_len, 2 * n_layers)
     # short walls: 2 per layer
-    add_piece(pieces, crate_id, "Walls", "Wall board (short)", "Board", walls_dims, W, 2 * n_layers)
+    add_piece(pieces, crate_id, "Walls", "Wall board (short)", "Board", walls_dims, short_wall_len, 2 * n_layers)
+
+    # --- Square end wall joints (additional item) ---
+    add_piece(pieces, crate_id, "Walls", "Square end wall joist", "Board", square_joist_dims, wall_h, 4)
 
     # --- Lid boards ---
-    t_l, w_l = parse_dims(lid_dims)
-    n_lid = ceil_div(W, (w_l + gap))
-    add_piece(pieces, crate_id, "Lid", "Lid board", "Board", lid_dims, L, n_lid)
+    _, w_l = parse_dims(lid_dims)
+    # Lid boards are mounted transversely across lid longitudinal reinforcement boards.
+    n_lid = ceil_div(outer_l, (w_l + gap))
+    add_piece(pieces, crate_id, "Lid", "Lid board", "Board", lid_dims, outer_w, n_lid)
 
     # --- Reinforcements for walls (rails + verticals + diagonals) ---
     # Per wall helper
@@ -118,25 +190,30 @@ def compute_for_crate(crate_row, settings):
         add_piece(pieces, crate_id, "Reinforcements", f"Rail ({wall_label})", "Board", reinf_dims, wall_len, 2 * multiplier)
 
         n_vertical = (math.floor(wall_len / spacing) + 1) if spacing > 0 else 0
-        add_piece(pieces, crate_id, "Reinforcements", f"Vertical ({wall_label})", "Board", reinf_dims, H, n_vertical * multiplier)
+        add_piece(pieces, crate_id, "Reinforcements", f"Vertical ({wall_label})", "Board", reinf_dims, wall_h, n_vertical * multiplier)
 
         n_bays = max(n_vertical - 1, 0)
         if n_bays > 0:
             bay = wall_len / n_bays
-            diag_len = math.sqrt(H**2 + bay**2)
+            diag_len = math.sqrt(wall_h**2 + bay**2)
             add_piece(pieces, crate_id, "Reinforcements", f"Diagonal ({wall_label})", "Board", reinf_dims, diag_len, n_bays * multiplier)
 
     # 2 long walls, 2 short walls
-    wall_reinf(L, "long wall", 2)
-    wall_reinf(W, "short wall", 2)
+    wall_reinf(long_wall_len, "long wall", 2)
+    wall_reinf(short_wall_len, "short wall", 2)
+
+    # --- Lid reinforcement (additional items) ---
+    n_lid_battens = (math.floor(outer_l / spacing) + 1) if spacing > 0 else 0
+    add_piece(pieces, crate_id, "Lid reinforcement", "Lid batten (transverse)", "Board", lid_reinf_beams_dims, outer_w, n_lid_battens)
+    add_piece(pieces, crate_id, "Lid reinforcement", "Lid connector (longitudinal)", "Board", lid_reinf_long_dims, outer_l, 2)
 
     # --- Runners (beams) ---
-    # longitudinal: n_long_runners pieces of length L
-    add_piece(pieces, crate_id, "Runners", "Runner longitudinal", "Beam", runner_long_dims, L, n_long_runners)
+    # longitudinal: n_long_runners pieces of length inner length
+    add_piece(pieces, crate_id, "Runners", "Runner longitudinal", "Beam", runner_long_dims, inner_l, n_long_runners)
 
-    # transverse: floor(L/1000)+1 pieces of length W
-    n_tr = math.floor(L / 1000) + 1
-    add_piece(pieces, crate_id, "Runners", "Runner transverse", "Beam", runner_tr_dims, W, n_tr)
+    # transverse: floor(inner_l/1000)+1 pieces of length inner width
+    n_tr = math.floor(inner_l / 1000) + 1
+    add_piece(pieces, crate_id, "Runners", "Runner transverse", "Beam", runner_tr_dims, inner_w, n_tr)
 
     pieces_df = pd.DataFrame(pieces)
     return pieces_df
@@ -308,11 +385,13 @@ st.sidebar.header("Global settings")
 gap_mm = st.sidebar.number_input("Gap between boards g (mm)", min_value=0, max_value=50, value=3, step=1)
 reinf_spacing_mm = st.sidebar.number_input("Reinforcement spacing (mm)", min_value=200, max_value=3000, value=1000, step=50)
 n_long_runners = st.sidebar.number_input("Number of longitudinal runners (pcs)", min_value=0, max_value=10, value=2, step=1)
+top_margin_mm = st.sidebar.number_input("Top margin above load (mm)", min_value=0, max_value=2000, value=0, step=10)
 
 settings = dict(
     gap_mm=int(gap_mm),
     reinf_spacing_mm=int(reinf_spacing_mm),
     n_long_runners=int(n_long_runners),
+    top_margin_mm=int(top_margin_mm),
 )
 
 uploaded = st.file_uploader("Upload XLSX with crates + configuration", type=["xlsx"])
@@ -337,7 +416,8 @@ if uploaded:
     required_cols = [
         "Crate", "L", "W", "H",
         "Walls", "Reinforcements/diagonals",
-        "Runner longitudal", "Runner transverse", "Lid"
+        "Runner longitudal", "Runner transverse", "Lid",
+        "Lid Reinforcement Beams", "Lid reinforcement Longitudal Boards", "Square End Wall Joists"
     ]
     missing = [c for c in required_cols if c not in crates_df.columns]
     if missing:
@@ -345,12 +425,20 @@ if uploaded:
         st.stop()
 
     # Check selections exist
-    sel_cols = ["Walls","Reinforcements/diagonals","Runner longitudal","Runner transverse","Lid"]
+    sel_specs = {
+        "Walls": "Board",
+        "Reinforcements/diagonals": "Board",
+        "Runner longitudal": "Beam",
+        "Runner transverse": "Beam",
+        "Lid": "Board",
+        "Lid Reinforcement Beams": "Board",
+        "Lid reinforcement Longitudal Boards": "Board",
+        "Square End Wall Joists": "Board",
+    }
     problems = []
     for idx,row in crates_df.iterrows():
-        for c in sel_cols:
+        for c, mtype in sel_specs.items():
             dims = str(row[c]).strip()
-            mtype = "Board" if c in ["Walls","Reinforcements/diagonals","Lid"] else "Beam"
             key = f"{mtype}|{dims}"
             if key not in available:
                 problems.append((row["Crate"], c, key))
@@ -359,7 +447,14 @@ if uploaded:
         st.dataframe(pd.DataFrame(problems, columns=["Crate","Column","MissingKey"]))
         st.stop()
 
-    render_filterable_table("Crate overview", crates_df, "crate_overview", show_totals=False)
+    overview_df = crates_df.copy()
+    geom_rows = overview_df.apply(lambda r: derive_crate_geometry(r, settings), axis=1)
+    overview_df["Outer_L"] = geom_rows.apply(lambda g: g["outer_l_mm"])
+    overview_df["Outer_W"] = geom_rows.apply(lambda g: g["outer_w_mm"])
+    overview_df["Outer_H"] = geom_rows.apply(lambda g: g["outer_h_mm"])
+    overview_df["Inner_H_with_top_margin"] = geom_rows.apply(lambda g: g["inner_h_mm"])
+
+    render_filterable_table("Crate overview", overview_df, "crate_overview", show_totals=False)
 
     # Compute
     all_pieces = []
@@ -389,7 +484,7 @@ if uploaded:
     )
 
     # Export
-    out = export_to_xlsx(crates_df, config_df, pieces_df, mat_all_df)
+    out = export_to_xlsx(overview_df, config_df, pieces_df, mat_all_df)
     st.download_button(
         label="Download XLSX (results)",
         data=out,
