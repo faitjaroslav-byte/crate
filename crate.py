@@ -1,9 +1,17 @@
 import io
 import math
+import time
+import urllib.parse
+import urllib.request
+import json
+import secrets
 import pandas as pd
 import streamlit as st
 from st_aggrid import AgGrid, DataReturnMode, GridOptionsBuilder, GridUpdateMode
 from st_aggrid.shared import JsCode
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
 
 # -----------------------------
 # Helpers
@@ -103,6 +111,131 @@ def calc_volume_m3(material_type, dims_str, total_length_m):
     # both boards and beams: cross-section area = a*b in mm^2
     area_m2 = (a / 1000.0) * (b / 1000.0)
     return area_m2 * total_length_m
+
+class MemoryUpload(io.BytesIO):
+    def __init__(self, data: bytes, name: str):
+        super().__init__(data)
+        self.name = name
+        self.size = len(data)
+
+GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
+GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+
+def get_google_oauth_config():
+    if "google_oauth" not in st.secrets:
+        return None
+    conf = dict(st.secrets["google_oauth"])
+    required = ["client_id", "client_secret", "redirect_uri"]
+    if not all(conf.get(k) for k in required):
+        return None
+    return conf
+
+def build_google_auth_url(config, state: str):
+    params = {
+        "client_id": config["client_id"],
+        "redirect_uri": config["redirect_uri"],
+        "response_type": "code",
+        "scope": GOOGLE_DRIVE_SCOPE,
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+    }
+    return f"{GOOGLE_AUTH_URL}?{urllib.parse.urlencode(params)}"
+
+def post_form(url, data: dict):
+    encoded = urllib.parse.urlencode(data).encode("utf-8")
+    req = urllib.request.Request(url, data=encoded, method="POST")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    with urllib.request.urlopen(req) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+def exchange_code_for_tokens(config, code: str):
+    return post_form(
+        GOOGLE_TOKEN_URL,
+        {
+            "code": code,
+            "client_id": config["client_id"],
+            "client_secret": config["client_secret"],
+            "redirect_uri": config["redirect_uri"],
+            "grant_type": "authorization_code",
+        },
+    )
+
+def refresh_access_token(config, refresh_token: str):
+    return post_form(
+        GOOGLE_TOKEN_URL,
+        {
+            "refresh_token": refresh_token,
+            "client_id": config["client_id"],
+            "client_secret": config["client_secret"],
+            "grant_type": "refresh_token",
+        },
+    )
+
+def clear_google_auth_state():
+    for k in [
+        "google_tokens",
+        "google_auth_state",
+        "drive_file_bytes",
+        "drive_file_name",
+    ]:
+        if k in st.session_state:
+            del st.session_state[k]
+
+def ensure_fresh_google_token(config):
+    tokens = st.session_state.get("google_tokens")
+    if not tokens:
+        return None
+    expires_at = float(tokens.get("expires_at", 0))
+    if expires_at > time.time() + 60:
+        return tokens
+    refresh_token = tokens.get("refresh_token")
+    if not refresh_token:
+        return None
+    refreshed = refresh_access_token(config, refresh_token)
+    refreshed["refresh_token"] = refresh_token
+    refreshed["expires_at"] = time.time() + float(refreshed.get("expires_in", 3600))
+    st.session_state["google_tokens"] = refreshed
+    return refreshed
+
+def get_user_drive_service(config):
+    tokens = ensure_fresh_google_token(config)
+    if not tokens:
+        return None
+    creds = Credentials(
+        token=tokens.get("access_token"),
+        refresh_token=tokens.get("refresh_token"),
+        token_uri=GOOGLE_TOKEN_URL,
+        client_id=config["client_id"],
+        client_secret=config["client_secret"],
+        scopes=[GOOGLE_DRIVE_SCOPE],
+    )
+    return build("drive", "v3", credentials=creds, cache_discovery=False)
+
+def list_drive_xlsx_files(service, folder_id: str):
+    query = (
+        f"'{folder_id}' in parents and trashed=false and "
+        "mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"
+    )
+    resp = service.files().list(
+        q=query,
+        pageSize=100,
+        fields="files(id,name,modifiedTime,size)",
+        orderBy="modifiedTime desc",
+    ).execute()
+    return resp.get("files", [])
+
+def download_drive_file(service, file_id: str):
+    meta = service.files().get(fileId=file_id, fields="id,name,size,mimeType").execute()
+    request = service.files().get_media(fileId=file_id)
+    buffer = io.BytesIO()
+    downloader = MediaIoBaseDownload(buffer, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    data = buffer.getvalue()
+    return MemoryUpload(data, meta.get("name", f"{file_id}.xlsx"))
 
 def derive_crate_geometry(crate_row, settings):
     load_l = safe_int(crate_row["L"])
@@ -425,7 +558,78 @@ settings = dict(
     top_margin_mm=int(top_margin_mm),
 )
 
-uploaded = st.file_uploader("Upload XLSX with crates + configuration", type=["xlsx"])
+st.sidebar.subheader("Input source")
+source_mode = st.sidebar.radio("Source", ["Local file", "Google Drive"], index=0)
+uploaded = None
+
+if source_mode == "Local file":
+    uploaded = st.file_uploader("Upload XLSX with crates + configuration", type=["xlsx"])
+else:
+    if "drive_file_bytes" in st.session_state and "drive_file_name" in st.session_state:
+        uploaded = MemoryUpload(st.session_state["drive_file_bytes"], st.session_state["drive_file_name"])
+    oauth_conf = get_google_oauth_config()
+    if oauth_conf is None:
+        st.error("Google OAuth is not configured. Add [google_oauth] with client_id/client_secret/redirect_uri to Streamlit secrets.")
+    else:
+        qp = st.query_params
+        code = qp.get("code")
+        state = qp.get("state")
+        if isinstance(code, list):
+            code = code[0] if code else None
+        if isinstance(state, list):
+            state = state[0] if state else None
+
+        if code and state and st.session_state.get("google_auth_state") == state:
+            try:
+                token_data = exchange_code_for_tokens(oauth_conf, code)
+                token_data["expires_at"] = time.time() + float(token_data.get("expires_in", 3600))
+                st.session_state["google_tokens"] = token_data
+                st.session_state.pop("google_auth_state", None)
+                for k in list(st.query_params.keys()):
+                    del st.query_params[k]
+                st.rerun()
+            except Exception as e:
+                st.error(f"OAuth token exchange failed: {e}")
+
+        if st.sidebar.button("Sign out Google Drive"):
+            clear_google_auth_state()
+            st.rerun()
+
+        drive_service = get_user_drive_service(oauth_conf)
+        if drive_service is None:
+            if "google_auth_state" not in st.session_state:
+                st.session_state["google_auth_state"] = secrets.token_urlsafe(24)
+            auth_url = build_google_auth_url(oauth_conf, st.session_state["google_auth_state"])
+            st.sidebar.link_button("Sign in with Google", auth_url)
+            st.sidebar.info("After sign-in, you will return here and can load files.")
+        else:
+            folder_id = st.sidebar.text_input("Drive folder ID (optional)", value="")
+            file_id_input = st.sidebar.text_input("Drive file ID (optional)", value="")
+            selected_file = None
+            if folder_id.strip():
+                try:
+                    files = list_drive_xlsx_files(drive_service, folder_id.strip())
+                    options = {f"{f['name']} ({f['id']})": f["id"] for f in files}
+                    if options:
+                        selected_label = st.sidebar.selectbox("Pick XLSX from folder", list(options.keys()))
+                        selected_file = options[selected_label]
+                    else:
+                        st.sidebar.info("No XLSX files found in this folder.")
+                except Exception as e:
+                    st.sidebar.error(f"Drive folder read failed: {e}")
+            file_id = file_id_input.strip() or selected_file
+            if st.sidebar.button("Load from Drive"):
+                if not file_id:
+                    st.sidebar.warning("Provide File ID or select a file from folder.")
+                else:
+                    try:
+                        loaded = download_drive_file(drive_service, file_id)
+                        st.session_state["drive_file_bytes"] = loaded.getvalue()
+                        st.session_state["drive_file_name"] = loaded.name
+                        uploaded = MemoryUpload(st.session_state["drive_file_bytes"], st.session_state["drive_file_name"])
+                        st.success(f"Loaded from Google Drive: {uploaded.name}")
+                    except Exception as e:
+                        st.error(f"Drive download failed: {e}")
 
 if uploaded:
     if "applied_settings" not in st.session_state:
