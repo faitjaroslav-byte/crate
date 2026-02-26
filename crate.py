@@ -559,7 +559,14 @@ settings = dict(
 )
 
 st.sidebar.subheader("Input source")
-source_mode = st.sidebar.radio("Source", ["Local file", "Google Drive"], index=0)
+if "source_mode" not in st.session_state:
+    st.session_state["source_mode"] = "Local file"
+source_mode = st.sidebar.radio(
+    "Source",
+    ["Local file", "Google Drive"],
+    index=0 if st.session_state["source_mode"] == "Local file" else 1,
+)
+st.session_state["source_mode"] = source_mode
 uploaded = None
 
 if source_mode == "Local file":
