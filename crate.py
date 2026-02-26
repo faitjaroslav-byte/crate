@@ -226,6 +226,34 @@ def list_drive_xlsx_files(service, folder_id: str):
     ).execute()
     return resp.get("files", [])
 
+def search_drive_xlsx_files(service, query_text: str, limit=50):
+    safe = query_text.replace("'", "\\'")
+    query = (
+        "trashed=false and "
+        "mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' and "
+        f"name contains '{safe}'"
+    )
+    resp = service.files().list(
+        q=query,
+        pageSize=limit,
+        fields="files(id,name,modifiedTime,size,owners(displayName))",
+        orderBy="modifiedTime desc",
+    ).execute()
+    return resp.get("files", [])
+
+def list_recent_drive_xlsx_files(service, limit=50):
+    query = (
+        "trashed=false and "
+        "mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"
+    )
+    resp = service.files().list(
+        q=query,
+        pageSize=limit,
+        fields="files(id,name,modifiedTime,size,owners(displayName))",
+        orderBy="modifiedTime desc",
+    ).execute()
+    return resp.get("files", [])
+
 def download_drive_file(service, file_id: str):
     meta = service.files().get(fileId=file_id, fields="id,name,size,mimeType").execute()
     request = service.files().get_media(fileId=file_id)
@@ -621,24 +649,43 @@ else:
             st.sidebar.info("After sign-in, you will return here and can load files.")
         else:
             st.sidebar.success("Google Drive status: Signed in")
-            folder_id = st.sidebar.text_input("Drive folder ID (optional)", value="")
-            file_id_input = st.sidebar.text_input("Drive file ID (optional)", value="")
+            search_query = st.sidebar.text_input("Search Google Drive files", value="")
+            files = []
+            try:
+                if search_query.strip():
+                    files = search_drive_xlsx_files(drive_service, search_query.strip(), limit=50)
+                else:
+                    files = list_recent_drive_xlsx_files(drive_service, limit=25)
+            except Exception as e:
+                st.sidebar.error(f"Drive file search failed: {e}")
+
             selected_file = None
-            if folder_id.strip():
-                try:
-                    files = list_drive_xlsx_files(drive_service, folder_id.strip())
-                    options = {f"{f['name']} ({f['id']})": f["id"] for f in files}
-                    if options:
-                        selected_label = st.sidebar.selectbox("Pick XLSX from folder", list(options.keys()))
-                        selected_file = options[selected_label]
-                    else:
-                        st.sidebar.info("No XLSX files found in this folder.")
-                except Exception as e:
-                    st.sidebar.error(f"Drive folder read failed: {e}")
-            file_id = file_id_input.strip() or selected_file
+            if files:
+                options = {}
+                for f in files:
+                    modified = clean_text(f.get("modifiedTime", ""))[:19].replace("T", " ")
+                    owner = ""
+                    owners = f.get("owners") or []
+                    if owners:
+                        owner = clean_text(owners[0].get("displayName", ""))
+                    label = f"{f.get('name', 'Unnamed')} [{modified}] {owner}".strip()
+                    options[label] = f["id"]
+                labels = list(options.keys())
+                selected_label = st.sidebar.selectbox("Select XLSX file", labels)
+                selected_file = options[selected_label]
+            else:
+                if search_query.strip():
+                    st.sidebar.info("No XLSX files matched your search.")
+                else:
+                    st.sidebar.info("No recent XLSX files found.")
+
+            with st.sidebar.expander("Advanced (manual File ID)", expanded=False):
+                manual_file_id = st.text_input("Drive file ID", value="", key="manual_drive_file_id")
+
+            file_id = clean_text(manual_file_id) or selected_file
             if st.sidebar.button("Load from Drive"):
                 if not file_id:
-                    st.sidebar.warning("Provide File ID or select a file from folder.")
+                    st.sidebar.warning("Search/select a file, or provide a manual File ID.")
                 else:
                     try:
                         loaded = download_drive_file(drive_service, file_id)
