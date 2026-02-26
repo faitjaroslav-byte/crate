@@ -527,21 +527,24 @@ def render_material_consumption_table(title: str, df: pd.DataFrame, key_prefix: 
         """
         function(params) {
             const api = params.api;
-            const total = {Crate: "", Part: "", Item: "SUM", MaterialType: "", Dimensions: "", Length_mm: null, Qty: null, TotalLength_m: null, m3: null};
+            const total = {Crate: "", Part: "", Item: "SUM", MaterialType: "", Dimensions: "", Length_mm: null, Qty: null, TotalLength_m: null, m3: null, kg: null};
             let qty = 0;
             let totalLength = 0;
             let m3 = 0;
+            let kg = 0;
 
             api.forEachNodeAfterFilterAndSort(function(node) {
                 qty += Number(node.data.Qty || 0);
                 totalLength += Number(node.data.TotalLength_m || 0);
                 m3 += Number(node.data.m3 || 0);
+                kg += Number(node.data.kg || 0);
             });
 
             const round2 = (value) => Math.round(value * 100) / 100;
             const filtered = api.isAnyFilterPresent();
 
             total.m3 = round2(m3);
+            total.kg = round2(kg);
             if (filtered) {
                 total.Qty = round2(qty);
                 total.TotalLength_m = round2(totalLength);
@@ -583,6 +586,7 @@ n_long_runners = st.sidebar.number_input("Number of longitudinal runners (pcs)",
 longitudinal_margin_mm = st.sidebar.number_input("Longitudinal margin (mm)", min_value=0, max_value=2000, value=0, step=10)
 horizontal_margin_mm = st.sidebar.number_input("Horizontal margin (mm)", min_value=0, max_value=2000, value=0, step=10)
 top_margin_mm = st.sidebar.number_input("Top margin above load (mm)", min_value=0, max_value=2000, value=0, step=10)
+wood_density_kg_m3 = st.sidebar.number_input("Wood density (kg/m3)", min_value=200, max_value=1000, value=450, step=10)
 refresh_clicked = st.sidebar.button("Refresh calculations")
 
 settings = dict(
@@ -592,6 +596,7 @@ settings = dict(
     longitudinal_margin_mm=int(longitudinal_margin_mm),
     horizontal_margin_mm=int(horizontal_margin_mm),
     top_margin_mm=int(top_margin_mm),
+    wood_density_kg_m3=float(wood_density_kg_m3),
 )
 
 st.sidebar.subheader("Input source")
@@ -796,8 +801,6 @@ if uploaded:
     overview_df["Outer_L"] = geom_rows.apply(lambda g: g["outer_l_mm"])
     overview_df["Outer_W"] = geom_rows.apply(lambda g: g["outer_w_mm"])
     overview_df["Outer_H"] = geom_rows.apply(lambda g: g["outer_h_mm"])
-    st.subheader("Crate overview")
-    st.dataframe(round_numeric_max_2(overview_df), use_container_width=True)
 
     # Compute
     all_pieces = []
@@ -809,6 +812,18 @@ if uploaded:
             lambda r: calc_volume_m3(r["MaterialType"], r["Dimensions"], r["TotalLength_m"]),
             axis=1,
         )
+        pieces_df["kg"] = pieces_df["m3"] * applied_settings["wood_density_kg_m3"]
+    else:
+        pieces_df["kg"] = []
+
+    crate_totals = (pieces_df.groupby("Crate", as_index=False)
+                    .agg(Crate_m3=("m3", "sum"),
+                         kg=("kg", "sum"))) if not pieces_df.empty else pd.DataFrame(columns=["Crate", "Crate_m3", "kg"])
+    overview_df = overview_df.merge(crate_totals, on="Crate", how="left")
+    overview_df["Crate_m3"] = pd.to_numeric(overview_df["Crate_m3"], errors="coerce").fillna(0.0)
+    overview_df["kg"] = pd.to_numeric(overview_df["kg"], errors="coerce").fillna(0.0)
+    st.subheader("Crate overview")
+    st.dataframe(round_numeric_max_2(overview_df), use_container_width=True)
 
     render_material_consumption_table(
         "Material consumption and cutting plan",
@@ -817,11 +832,12 @@ if uploaded:
     )
 
     mat_all_df = material_summary_all(pieces_df)
+    mat_all_df["kg"] = mat_all_df["Volume_m3"] * applied_settings["wood_density_kg_m3"]
     render_filterable_table(
         "Material needed (ordering amounts)",
         mat_all_df,
         "material_ordering_amounts",
-        sum_columns=["TotalLength_m", "Volume_m3"],
+        sum_columns=["TotalLength_m", "Volume_m3", "kg"],
         show_totals=False,
         min_height=140,
     )
