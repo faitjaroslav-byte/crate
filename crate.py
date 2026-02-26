@@ -121,6 +121,8 @@ class MemoryUpload(io.BytesIO):
 GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+GSHEET_MIME = "application/vnd.google-apps.spreadsheet"
 
 def get_google_oauth_config():
     if "google_oauth" not in st.secrets:
@@ -230,13 +232,13 @@ def search_drive_xlsx_files(service, query_text: str, limit=50):
     safe = query_text.replace("'", "\\'")
     query = (
         "trashed=false and "
-        "mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' and "
+        f"(mimeType='{XLSX_MIME}' or mimeType='{GSHEET_MIME}') and "
         f"name contains '{safe}'"
     )
     resp = service.files().list(
         q=query,
         pageSize=limit,
-        fields="files(id,name,modifiedTime,size,owners(displayName))",
+        fields="files(id,name,modifiedTime,size,mimeType,owners(displayName))",
         orderBy="modifiedTime desc",
     ).execute()
     return resp.get("files", [])
@@ -244,26 +246,32 @@ def search_drive_xlsx_files(service, query_text: str, limit=50):
 def list_recent_drive_xlsx_files(service, limit=50):
     query = (
         "trashed=false and "
-        "mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'"
+        f"(mimeType='{XLSX_MIME}' or mimeType='{GSHEET_MIME}')"
     )
     resp = service.files().list(
         q=query,
         pageSize=limit,
-        fields="files(id,name,modifiedTime,size,owners(displayName))",
+        fields="files(id,name,modifiedTime,size,mimeType,owners(displayName))",
         orderBy="modifiedTime desc",
     ).execute()
     return resp.get("files", [])
 
 def download_drive_file(service, file_id: str):
     meta = service.files().get(fileId=file_id, fields="id,name,size,mimeType").execute()
-    request = service.files().get_media(fileId=file_id)
+    mime_type = meta.get("mimeType", "")
+    if mime_type == GSHEET_MIME:
+        request = service.files().export_media(fileId=file_id, mimeType=XLSX_MIME)
+        filename = f"{meta.get('name', file_id)}.xlsx"
+    else:
+        request = service.files().get_media(fileId=file_id)
+        filename = meta.get("name", f"{file_id}.xlsx")
     buffer = io.BytesIO()
     downloader = MediaIoBaseDownload(buffer, request)
     done = False
     while not done:
         _, done = downloader.next_chunk()
     data = buffer.getvalue()
-    return MemoryUpload(data, meta.get("name", f"{file_id}.xlsx"))
+    return MemoryUpload(data, filename)
 
 def derive_crate_geometry(crate_row, settings):
     load_l = safe_int(crate_row["L"])
