@@ -11,7 +11,7 @@ from st_aggrid import AgGrid, DataReturnMode, GridOptionsBuilder, GridUpdateMode
 from st_aggrid.shared import JsCode
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
 
 # -----------------------------
 # Helpers
@@ -272,6 +272,22 @@ def download_drive_file(service, file_id: str):
         _, done = downloader.next_chunk()
     data = buffer.getvalue()
     return MemoryUpload(data, filename)
+
+def upload_file_to_drive(service, file_name: str, data: bytes, folder_id: str = ""):
+    metadata = {"name": file_name}
+    if folder_id.strip():
+        metadata["parents"] = [folder_id.strip()]
+    media = MediaIoBaseUpload(
+        io.BytesIO(data),
+        mimetype=XLSX_MIME,
+        resumable=False,
+    )
+    created = service.files().create(
+        body=metadata,
+        media_body=media,
+        fields="id,name,webViewLink",
+    ).execute()
+    return created
 
 def derive_crate_geometry(crate_row, settings):
     load_l = safe_int(crate_row["L"])
@@ -614,6 +630,7 @@ source_mode = st.sidebar.radio(
 )
 st.session_state["source_mode"] = source_mode
 uploaded = None
+drive_service = None
 
 if source_mode == "Local file":
     uploaded = st.file_uploader("Upload XLSX with crates + configuration", type=["xlsx"])
@@ -844,11 +861,34 @@ if uploaded:
 
     # Export
     out = export_to_xlsx(overview_df, config_df, pieces_df, mat_all_df)
-    st.download_button(
-        label="Download XLSX (results)",
-        data=out,
-        file_name="crate_results.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+    export_bytes = out.getvalue()
+    col_dl, col_drive = st.columns(2)
+    with col_dl:
+        st.download_button(
+            label="Download XLSX (results)",
+            data=export_bytes,
+            file_name="crate_results.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    with col_drive:
+        if source_mode == "Google Drive" and drive_service is not None:
+            export_name = st.text_input("Drive export file name", value="crate_results.xlsx")
+            export_folder = st.text_input("Drive target folder ID (optional)", value="")
+            if st.button("Save XLSX to Google Drive"):
+                try:
+                    created = upload_file_to_drive(
+                        drive_service,
+                        clean_text(export_name) or "crate_results.xlsx",
+                        export_bytes,
+                        export_folder,
+                    )
+                    st.success(f"Saved to Drive: {created.get('name', 'file')}")
+                    link = created.get("webViewLink")
+                    if link:
+                        st.markdown(f"[Open in Google Drive]({link})")
+                except Exception as e:
+                    st.error(f"Drive upload failed: {e}")
+        else:
+            st.info("Switch source to Google Drive and sign in to enable Drive export.")
 else:
     st.info("Upload your input XLSX to start.")
