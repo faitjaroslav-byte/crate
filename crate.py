@@ -559,8 +559,13 @@ settings = dict(
 )
 
 st.sidebar.subheader("Input source")
+callback_code = st.query_params.get("code")
+if isinstance(callback_code, list):
+    callback_code = callback_code[0] if callback_code else None
 if "source_mode" not in st.session_state:
     st.session_state["source_mode"] = "Local file"
+if callback_code:
+    st.session_state["source_mode"] = "Google Drive"
 source_mode = st.sidebar.radio(
     "Source",
     ["Local file", "Google Drive"],
@@ -586,17 +591,21 @@ else:
         if isinstance(state, list):
             state = state[0] if state else None
 
-        if code and state and st.session_state.get("google_auth_state") == state:
-            try:
-                token_data = exchange_code_for_tokens(oauth_conf, code)
-                token_data["expires_at"] = time.time() + float(token_data.get("expires_in", 3600))
-                st.session_state["google_tokens"] = token_data
-                st.session_state.pop("google_auth_state", None)
-                for k in list(st.query_params.keys()):
-                    del st.query_params[k]
-                st.rerun()
-            except Exception as e:
-                st.error(f"OAuth token exchange failed: {e}")
+        if code:
+            expected_state = st.session_state.get("google_auth_state")
+            if expected_state and state and expected_state != state:
+                st.error("OAuth state mismatch. Please click Sign in with Google again.")
+            else:
+                try:
+                    token_data = exchange_code_for_tokens(oauth_conf, code)
+                    token_data["expires_at"] = time.time() + float(token_data.get("expires_in", 3600))
+                    st.session_state["google_tokens"] = token_data
+                    st.session_state.pop("google_auth_state", None)
+                    for k in list(st.query_params.keys()):
+                        del st.query_params[k]
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"OAuth token exchange failed: {e}")
 
         if st.sidebar.button("Sign out Google Drive"):
             clear_google_auth_state()
@@ -604,12 +613,14 @@ else:
 
         drive_service = get_user_drive_service(oauth_conf)
         if drive_service is None:
+            st.sidebar.warning("Google Drive status: Not signed in")
             if "google_auth_state" not in st.session_state:
                 st.session_state["google_auth_state"] = secrets.token_urlsafe(24)
             auth_url = build_google_auth_url(oauth_conf, st.session_state["google_auth_state"])
             st.sidebar.link_button("Sign in with Google", auth_url)
             st.sidebar.info("After sign-in, you will return here and can load files.")
         else:
+            st.sidebar.success("Google Drive status: Signed in")
             folder_id = st.sidebar.text_input("Drive folder ID (optional)", value="")
             file_id_input = st.sidebar.text_input("Drive file ID (optional)", value="")
             selected_file = None
